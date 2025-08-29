@@ -1,0 +1,339 @@
+<!--
+Solar System Simulation
+Single-file HTML/CSS/JS interactive simulation using Canvas.
+Features:
+- Planets with configurable orbital speeds and rotations
+- Zoom & pan (mouse wheel + drag)
+- Play/Pause and speed control
+- Click or hover planets to show details
+- requestAnimationFrame animation loop, optimized drawing
+- Responsive canvas and high-DPI support
+
+Save this file as `solar-system-simulation.html` and open in a modern browser.
+-->
+
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width,initial-scale=1" />
+  <title>Solar System Simulation</title>
+  <style>
+    :root{
+      --bg:#05060a;
+      --panel:#0b1220cc;
+      --accent:#ffd36b;
+      --muted:#98a0b3;
+    }
+    html,body{height:100%;margin:0;font-family:Inter, ui-sans-serif, system-ui, -apple-system, 'Segoe UI', Roboto, 'Helvetica Neue', Arial}
+    body{background: radial-gradient(circle at 10% 10%, #071126 0%, var(--bg) 40%); color:#dbe7ff; overflow:hidden}
+
+    header{position:absolute;left:16px;top:12px;z-index:20}
+    h1{font-size:16px;margin:0 0 6px 0;color:var(--accent)}
+    .controls{display:flex;gap:8px;align-items:center;background:var(--panel);padding:10px;border-radius:10px;box-shadow:0 6px 20px rgba(5,8,15,0.6)}
+    .controls label{font-size:12px;color:var(--muted)}
+    .btn{background:transparent;border:1px solid rgba(255,255,255,0.08);padding:6px 10px;border-radius:8px;color:inherit;cursor:pointer}
+    .btn:active{transform:translateY(1px)}
+    input[type=range]{-webkit-appearance:none;width:140px}
+    input[type=range]::-webkit-slider-runnable-track{height:6px;border-radius:6px;background:linear-gradient(90deg,#ffd36b,#7ee7ff)}
+    input[type=range]::-webkit-slider-thumb{-webkit-appearance:none;width:14px;height:14px;border-radius:50%;background:#fff;margin-top:-4px;box-shadow:0 2px 6px rgba(0,0,0,0.4)}
+
+    #canvas-wrap{position:absolute;inset:0}
+    canvas{display:block;width:100%;height:100%}
+
+    aside.info{position:absolute;right:16px;top:12px;width:260px;max-width:40%;z-index:20;background:linear-gradient(180deg, rgba(10,12,18,0.9), rgba(10,12,18,0.75));padding:12px;border-radius:10px;box-shadow:0 6px 24px rgba(2,4,8,0.6)}
+    .info h2{margin:0;font-size:14px;color:var(--accent)}
+    .planet-card{margin-top:8px;padding:8px;border-radius:8px;background:rgba(255,255,255,0.02)}
+    .small{font-size:12px;color:var(--muted)}
+
+    footer.instructions{position:absolute;left:16px;bottom:16px;z-index:20;background:var(--panel);padding:8px;border-radius:8px;font-size:12px}
+
+    @media (max-width:600px){.controls{flex-direction:column;align-items:flex-start}}
+  </style>
+</head>
+<body>
+  <header>
+    <h1>Solar System Simulation</h1>
+    <div class="controls">
+      <button id="playPause" class="btn">Pause</button>
+      <label class="small">Speed</label>
+      <input id="speedRange" type="range" min="0.1" max="5" step="0.1" value="1">
+      <label class="small">Zoom</label>
+      <button id="resetView" class="btn">Reset View</button>
+      <button id="toggleOrbits" class="btn">Toggle Orbits</button>
+    </div>
+  </header>
+
+  <div id="canvas-wrap"><canvas id="c"></canvas></div>
+
+  <aside class="info">
+    <h2 id="selectedTitle">Click a planet</h2>
+    <div id="infoCard" class="planet-card small">No planet selected. Hover or click planets to inspect.</div>
+  </aside>
+
+  <footer class="instructions small">Controls: Mouse wheel to zoom • Drag to pan • Click a planet to see details</footer>
+
+  <script>
+    // ----- CONFIG & DATA -----
+    const canvas = document.getElementById('c');
+    const ctx = canvas.getContext('2d');
+
+    // Planet data (approx relative distances and orbital periods) - not to scale for display
+    const PLANETS = [
+      {name:'Sun', color:'#ffd36b', radius:24, distance:0, orbitalPeriod:0, info:'The Sun — our star.'},
+      {name:'Mercury', color:'#bdb6a9', radius:3.8, distance:48, orbitalPeriod:88, info:'Small, rocky planet. Orbital period ~88 days.'},
+      {name:'Venus', color:'#e7c7a9', radius:9.5, distance:72, orbitalPeriod:225, info:'Thick atmosphere and very hot.'},
+      {name:'Earth', color:'#6ea8ff', radius:10, distance:100, orbitalPeriod:365, info:'Our home planet.'},
+      {name:'Mars', color:'#d36b45', radius:5.3, distance:152, orbitalPeriod:687, info:'The Red Planet.'},
+      {name:'Jupiter', color:'#d9b48b', radius:22, distance:260, orbitalPeriod:4332, info:'Gas giant, largest planet.'},
+      {name:'Saturn', color:'#efd5a3', radius:18, distance:340, orbitalPeriod:10759, info:'Prominent ring system.'},
+      {name:'Uranus', color:'#9fe3e9', radius:12, distance:420, orbitalPeriod:30687, info:'Ice giant, tilted axis.'},
+      {name:'Neptune', color:'#3b6ef6', radius:12, distance:480, orbitalPeriod:60190, info:'Farthest classical planet.'}
+    ];
+
+    // Simulation state
+    let running = true;
+    let simSpeed = 1; // multiplier
+    let showOrbits = true;
+
+    // View state
+    const view = {x:0,y:0,scale:1,dragging:false,lastX:0,lastY:0}
+
+    // Time tracking
+    let last = null; // timestamp
+    let simDays = 0; // simulated days
+
+    // Interaction
+    let hoveredPlanet = null;
+    let selectedPlanet = null;
+
+    // Hi-DPI setup
+    function resize(){
+      const dpr = Math.max(1, window.devicePixelRatio || 1);
+      canvas.width = Math.floor(canvas.clientWidth * dpr);
+      canvas.height = Math.floor(canvas.clientHeight * dpr);
+      ctx.setTransform(dpr,0,0,dpr,0,0);
+    }
+
+    window.addEventListener('resize', resize);
+
+    // Utilities
+    function worldToScreen(wx, wy){
+      return {x: (wx - view.x) * view.scale + canvas.clientWidth/2, y: (wy - view.y) * view.scale + canvas.clientHeight/2};
+    }
+    function screenToWorld(sx, sy){
+      return {x: (sx - canvas.clientWidth/2)/view.scale + view.x, y: (sy - canvas.clientHeight/2)/view.scale + view.y};
+    }
+
+    // Main draw
+    function draw(now){
+      if(!last) last = now;
+      const dtMs = now - last; last = now;
+      const dtDays = (dtMs/1000) * 0.5 * simSpeed; // conversion: real seconds -> simulated days (tweakable)
+      if(running) simDays += dtDays;
+
+      // clear
+      ctx.clearRect(0,0,canvas.clientWidth, canvas.clientHeight);
+
+      // background stars
+      drawStars();
+
+      // draw orbits
+      if(showOrbits){
+        for(let i=1;i<PLANETS.length;i++){
+          drawOrbit(PLANETS[i].distance);
+        }
+      }
+
+      // draw planets
+      for(let i=0;i<PLANETS.length;i++){
+        const p = PLANETS[i];
+        let x = 0, y = 0;
+        if(i===0){ // sun at center
+          x = 0; y = 0;
+        } else {
+          const period = p.orbitalPeriod; // days
+          const angle = (simDays / period) * Math.PI * 2; // radians
+          x = Math.cos(angle) * p.distance;
+          y = Math.sin(angle) * p.distance * 0.85; // slight ellipse
+        }
+
+        const screen = worldToScreen(x,y);
+
+        // shadow for depth
+        ctx.beginPath();
+        const radScreen = Math.max(2, p.radius * view.scale);
+        ctx.arc(screen.x+2, screen.y+2, radScreen+1, 0, Math.PI*2);
+        ctx.fillStyle = 'rgba(0,0,0,0.25)';
+        ctx.fill();
+
+        // planet
+        ctx.beginPath();
+        ctx.arc(screen.x, screen.y, radScreen, 0, Math.PI*2);
+        ctx.fillStyle = p.color;
+        ctx.fill();
+
+        // highlight if hovered or selected
+        if(selectedPlanet === p || hoveredPlanet === p){
+          ctx.lineWidth = 2;
+          ctx.strokeStyle = 'rgba(255,255,255,0.6)';
+          ctx.stroke();
+        }
+
+        // label small
+        if(view.scale > 0.6 && i>0){
+          ctx.font = '12px system-ui, sans-serif';
+          ctx.fillStyle = 'rgba(255,255,255,0.8)';
+          ctx.fillText(p.name, screen.x + radScreen + 6, screen.y + 4);
+        }
+
+        // store screen position for interaction
+        p._screen = screen;
+        p._screenRadius = radScreen;
+        p._worldPos = {x,y};
+      }
+
+      // HUD overlay: center marker
+      drawHUD();
+
+      requestAnimationFrame(draw);
+    }
+
+    function drawOrbit(distance){
+      ctx.beginPath();
+      const steps = 200;
+      for(let i=0;i<=steps;i++){
+        const t = (i/steps) * Math.PI*2;
+        const x = Math.cos(t)*distance;
+        const y = Math.sin(t)*distance*0.85;
+        const s = worldToScreen(x,y);
+        if(i===0) ctx.moveTo(s.x,s.y); else ctx.lineTo(s.x,s.y);
+      }
+      ctx.strokeStyle = 'rgba(255,255,255,0.04)';
+      ctx.lineWidth = 1;
+      ctx.stroke();
+    }
+
+    function drawStars(){
+      // subtle vignette with small dots
+      const w = canvas.clientWidth; const h = canvas.clientHeight;
+      // small random stars seeded by time for subtle twinkle
+      ctx.save();
+      ctx.globalAlpha = 0.9;
+      for(let i=0;i<60;i++){
+        const sx = (i*97)%w; const sy = ((i*53)+Math.floor(simDays))%h;
+        ctx.beginPath(); ctx.arc(sx,sy, Math.abs(Math.sin(i+simDays*0.05))*1.6 + 0.2, 0, Math.PI*2);
+        ctx.fillStyle = 'rgba(255,255,255,0.06)'; ctx.fill();
+      }
+      ctx.restore();
+    }
+
+    function drawHUD(){
+      // center marker as sun location
+      const center = worldToScreen(0,0);
+      // small glow for sun
+      ctx.beginPath(); ctx.arc(center.x, center.y, 6 * view.scale, 0, Math.PI*2);
+      const g = ctx.createRadialGradient(center.x, center.y, 0, center.x, center.y, 40*view.scale);
+      g.addColorStop(0, 'rgba(255,211,107,0.25)');
+      g.addColorStop(1, 'rgba(255,211,107,0)');
+      ctx.fillStyle = g; ctx.fill();
+    }
+
+    // Interaction handlers
+    canvas.addEventListener('mousemove', (e)=>{
+      if(view.dragging){
+        const dx = (e.clientX - view.lastX) / view.scale;
+        const dy = (e.clientY - view.lastY) / view.scale;
+        view.x -= dx; view.y -= dy;
+        view.lastX = e.clientX; view.lastY = e.clientY;
+        return;
+      }
+
+      const rect = canvas.getBoundingClientRect();
+      const sx = e.clientX - rect.left; const sy = e.clientY - rect.top;
+      hoveredPlanet = null;
+      for(let i=PLANETS.length-1;i>=0;i--){
+        const p = PLANETS[i];
+        if(!p._screen) continue;
+        const dx = sx - p._screen.x; const dy = sy - p._screen.y;
+        if(Math.hypot(dx,dy) <= p._screenRadius + 4){ hoveredPlanet = p; break; }
+      }
+      updateInfoPanel();
+    });
+
+    canvas.addEventListener('mousedown', (e)=>{
+      view.dragging = true; view.lastX = e.clientX; view.lastY = e.clientY;
+    });
+    window.addEventListener('mouseup', ()=>{ view.dragging = false; });
+
+    canvas.addEventListener('click', (e)=>{
+      const rect = canvas.getBoundingClientRect();
+      const sx = e.clientX - rect.left; const sy = e.clientY - rect.top;
+      let clicked = null;
+      for(let i=PLANETS.length-1;i>=0;i--){
+        const p = PLANETS[i];
+        if(!p._screen) continue;
+        const dx = sx - p._screen.x; const dy = sy - p._screen.y;
+        if(Math.hypot(dx,dy) <= p._screenRadius + 4){ clicked = p; break; }
+      }
+      if(clicked) selectedPlanet = clicked; else selectedPlanet = null;
+      updateInfoPanel();
+    });
+
+    // Zoom with wheel
+    canvas.addEventListener('wheel', (e)=>{
+      e.preventDefault();
+      const delta = Math.sign(e.deltaY);
+      const factor = 1 - delta * 0.1;
+      // zoom toward mouse position
+      const rect = canvas.getBoundingClientRect();
+      const sx = e.clientX - rect.left; const sy = e.clientY - rect.top;
+      const before = screenToWorld(sx,sy);
+      view.scale *= factor;
+      view.scale = Math.min(Math.max(view.scale, 0.2), 5);
+      const after = screenToWorld(sx,sy);
+      view.x += (before.x - after.x); view.y += (before.y - after.y);
+    }, {passive:false});
+
+    // Controls
+    document.getElementById('playPause').addEventListener('click', ()=>{
+      running = !running; document.getElementById('playPause').textContent = running ? 'Pause' : 'Play';
+    });
+    document.getElementById('speedRange').addEventListener('input', (e)=>{ simSpeed = parseFloat(e.target.value); });
+    document.getElementById('resetView').addEventListener('click', ()=>{ view.x=0; view.y=0; view.scale=1; });
+    document.getElementById('toggleOrbits').addEventListener('click', ()=>{ showOrbits = !showOrbits; document.getElementById('toggleOrbits').textContent = showOrbits ? 'Hide Orbits' : 'Show Orbits'; });
+
+    function updateInfoPanel(){
+      const title = document.getElementById('selectedTitle');
+      const card = document.getElementById('infoCard');
+      const p = selectedPlanet || hoveredPlanet;
+      if(p){
+        title.textContent = p.name;
+        const lines = [];
+        lines.push(`<div><strong>Type:</strong> ${p.name === 'Sun' ? 'Star' : 'Planet'}</div>`);
+        if(p.distance) lines.push(`<div><strong>Distance (relative):</strong> ${p.distance}</div>`);
+        if(p.orbitalPeriod) lines.push(`<div><strong>Orbital period (days):</strong> ${p.orbitalPeriod}</div>`);
+        lines.push(`<div style=\"margin-top:6px;font-size:13px;color:var(--muted)\">${p.info}</div>`);
+        lines.push(`<div style=\"margin-top:8px;font-size:12px;color:var(--muted)\">Sim time: ${Math.round(simDays)} days</div>`);
+        card.innerHTML = lines.join('');
+      } else {
+        title.textContent = 'Click a planet';
+        card.textContent = 'No planet selected. Hover or click planets to inspect.';
+      }
+    }
+
+    // Initialize
+    function init(){
+      resize();
+      requestAnimationFrame(draw);
+      // set initial view
+      view.scale = Math.min(canvas.clientWidth/900, 1.0) * 1.0 + 0.6; // auto-scale to fit
+    }
+
+    init();
+
+    // expose for dev console (optional)
+    window.SOLAR = {PLANETS, getState: ()=>({simDays,simSpeed,view}), setSimDays:(d)=>simDays=d};
+  </script>
+</body>
+</html>
